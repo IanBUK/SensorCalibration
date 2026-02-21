@@ -1,21 +1,49 @@
-//#define TEST_MODE
+//#define TEST_BOARD_CAN_SAVE_LOAD_CALIBRATION
 
 #include "Adafruit_Sensor_Calibration.h"
+#include "elapsedMillis.h"
+
+Adafruit_Sensor *accelerometer, *gyroscope, *magnetometer;
 
 // select either EEPROM or SPI FLASH storage:
-//#ifdef ADAFRUIT_SENSOR_CALIBRATION_USE_EEPROM
-  Adafruit_Sensor_Calibration_EEPROM cal;
-//#else
-//  Adafruit_Sensor_Calibration_SDFat cal;
-//#endif
+Adafruit_Sensor_Calibration_EEPROM cal;
+// Adafruit_Sensor_Calibration_SDFat cal;
 
+// uncomment one combo 9-DoF!
+//#include "LSM6DS_LIS3MDL.h"  // see the the LSM6DS_LIS3MDL file in this project to change board to LSM6DS33, LSM6DS3U, LSM6DSOX, etc
+//#include "LSM9DS.h"           // LSM9DS1 or LSM9DS0
+#include "NXP_FXOS_FXAS.h"  // NXP 9-DoF breakout
+
+sensors_event_t mag_event, gyro_event, accel_event;
+
+int loopcount = 0;
+unsigned long lastFrameTime = millis(); 
+
+// Orientation variables
+unsigned long orientationUpdateMillis = 20;
+float orientationXDelta = 1; 
+float orientationYDelta = 2; 
+float orientationZDelta = 3; 
+float orientationX; 
+float orientationY; 
+float orientationZ; 
+
+// LED Variables
+const int ledPin = 13; 
+int ledState = LOW; 
+int ledFastblinks = 0; 
+elapsedMillis ledMillis = 0; 
+
+#ifdef TEST_BOARD_CAN_SAVE_LOAD_CALIBRATION
+// calibration variables
 float hardIronTestValues[3];
 float softIronTestValues[9];
 float magneticField = 45.0;
 float gyroZeroRotate[3];
+#endif
 
-// MotionCal uses an 80-byte packet format
-const int calibrationDataSize = 80;
+// MotionCal uses an 68-byte packet format
+const int calibrationDataSize = 68;
 byte caldata[calibrationDataSize];
 byte calcount = 0;
 
@@ -32,30 +60,35 @@ void setup() {
   Serial.begin(115200);
   while (!Serial) delay(10);
   delay(100);
-
+  Serial.println("device started");
   if (!cal.begin()) {
     Serial.println("Failed to initialize calibration EEPROM");
     while (1) yield();
   }
 
-#ifdef TEST_MODE
+#ifdef TEST_BOARD_CAN_SAVE_LOAD_CALIBRATION
   performEEPROMTest();
 #else
   if (cal.loadCalibration()) {
     Serial.println("Current calibration loaded:");
     cal.printSavedCalibration();
     printCalibration(cal.mag_softiron, cal.mag_hardiron, cal.mag_field, cal.gyro_zerorate, cal.accel_zerog, "read at startup");
- 
+    //while (1) delay(10);
   }
   else
   {
     Serial.println("calibration load failed.");
   }
+  if (!init_sensors()) {
+    Serial.println("Failed to find sensors");
+    while (1) delay(10);
+  }
+
   Serial.println("\n\nWaiting for data from MotionCal software...");
-  
 #endif
 }
 
+#ifdef TEST_BOARD_CAN_SAVE_LOAD_CALIBRATION
 void performEEPROMTest()
 {
   Serial.println("Calibration filesys test");
@@ -132,46 +165,56 @@ void populateTestValues()
 
 void readAndPrintCalibration()
 {
-
   if (! cal.loadCalibration()) {
     Serial.println("**WARNING** No calibration loaded/found");
   }
   cal.printSavedCalibration();
-
   printCalibration(cal.mag_softiron, cal.mag_hardiron, cal.mag_field, cal.gyro_zerorate, cal.accel_zerog, "read from readAndPrintCalibration");
- 
-  /* Serial.println("Calibrations found: ");
-  Serial.print("\tMagnetic Hard Offset: ");
-  for (int i=0; i<3; i++) {
-    Serial.print(cal.mag_hardiron[i]); 
-    if (i != 2) Serial.print(", ");
-  }
-  Serial.println();
-  
-  Serial.print("\tMagnetic Soft Offset: ");
-  for (int i=0; i<9; i++) {
-    Serial.print(cal.mag_softiron[i]); 
-    if (i != 8) Serial.print(", ");
-  }
-  Serial.println();
-
-  Serial.print("\tMagnetic Field Magnitude: ");
-  Serial.println(cal.mag_field);
-
-  Serial.print("\tGyro Zero Rate Offset: ");
-  for (int i=0; i<3; i++) {
-    Serial.print(cal.gyro_zerorate[i]); 
-    if (i != 2) Serial.print(", ");
-  }
-  Serial.println();
-
-  Serial.print("\tAccel Zero G Offset: ");
-  for (int i=0; i<3; i++) {
-    Serial.print(cal.accel_zerog[i]); 
-    if (i != 2) Serial.print(", ");
-  }
-  Serial.println();*/
 }
+
+void testCalibration()
+{
+  bool hardIronCalibrationPassed = true;
+  bool softIronCalibrationPassed = true;
+  bool gyroCalibrationPassed = true;
+  bool magneticCalibrationPassed = true;
+ 
+  Serial.print("hardIron: ");
+  for (int i=0; i<3; i++) {
+    Serial.printf("%F3 [%s] ", cal.mag_hardiron[i], cal.mag_hardiron[i] == hardIronTestValues[i]? "Y":"N");
+    if (i != 2) Serial.print(", ");
+    if (cal.mag_hardiron[i] != hardIronTestValues[i]) hardIronCalibrationPassed = false;
+  }
+
+  Serial.println();
+  Serial.print("softIron: ");
+  for (int i=0; i<9; i++) {
+    Serial.printf("%F3 [%s] ", cal.mag_softiron[i], cal.mag_softiron[i] == softIronTestValues[i]? "Y":"N");
+    if (i != 8) Serial.print(", ");
+    if (cal.mag_softiron[i] != softIronTestValues[i]) softIronCalibrationPassed = false;
+  }
+
+  Serial.println();
+  Serial.print("gyroscope: ");
+  for (int i=0; i<3; i++) {
+    Serial.printf("%F3 [%s] ", cal.gyro_zerorate[i], cal.gyro_zerorate[i] == gyroZeroRotate[i]? "Y":"N");
+    if (i != 2) Serial.print(", ");
+    if (cal.gyro_zerorate[i] != gyroZeroRotate[i]) gyroCalibrationPassed = false;
+  }
+  Serial.println();
+  Serial.printf("magnetic: %F3 [%s] \n", cal.mag_field, cal.mag_field == magneticField? "Y":"N");
+  if (cal.mag_field != magneticField) magneticCalibrationPassed = false;
+  if (hardIronCalibrationPassed && softIronCalibrationPassed && gyroCalibrationPassed && magneticCalibrationPassed)
+    Serial.println("All calibration tests passed");
+  else
+  {
+   Serial.printf("hardIron Calibration: %s\n", hardIronCalibrationPassed? "Pass": "Fail"); 
+   Serial.printf("softIron Calibration: %s\n", softIronCalibrationPassed? "Pass": "Fail"); 
+   Serial.printf("Gryroscope Calibration: %s\n", gyroCalibrationPassed? "Pass": "Fail"); 
+   Serial.printf("Magnetic Field Calibrationn: %s\n", magneticCalibrationPassed? "Pass": "Fail"); 
+  }
+}
+#endif
 
 void printCalibration(float magnetometerSoftIron[], float magnetometerHardIron[], float magneticField, float gyroZeroRotate[], float accelZeroG[], char prefix[])
 {
@@ -238,54 +281,238 @@ void printCalibration(float magnetometerSoftIron[], float magnetometerHardIron[]
 } 
 
 
-void testCalibration()
-{
-  bool hardIronCalibrationPassed = true;
-  bool softIronCalibrationPassed = true;
-  bool gyroCalibrationPassed = true;
-  bool magneticCalibrationPassed = true;
- 
-  Serial.print("hardIron: ");
-  for (int i=0; i<3; i++) {
-    Serial.printf("%F3 [%s] ", cal.mag_hardiron[i], cal.mag_hardiron[i] == hardIronTestValues[i]? "Y":"N");
-    if (i != 2) Serial.print(", ");
-    if (cal.mag_hardiron[i] != hardIronTestValues[i]) hardIronCalibrationPassed = false;
+void loop() {
+  receiveCalibration(); // Check for incoming cal FIRST
+  
+  // Only report data if we aren't currently receiving something
+  // and limit the rate to ~20Hz (50ms)
+  static unsigned long lastReport = 0;
+  if (millis() - lastReport > 50) {
+     reportSensorReadings();
+     reportCalibration();
+     lastReport = millis();
   }
+  
+  flashLed();
+}
 
-  Serial.println();
-  Serial.print("softIron: ");
-  for (int i=0; i<9; i++) {
-    Serial.printf("%F3 [%s] ", cal.mag_softiron[i], cal.mag_softiron[i] == softIronTestValues[i]? "Y":"N");
-    if (i != 8) Serial.print(", ");
-    if (cal.mag_softiron[i] != softIronTestValues[i]) softIronCalibrationPassed = false;
-  }
+void reportSensorReadings() {
+  // SILENCE: Don't talk if we are in the middle of receiving a packet
+  if (calcount != 0) return;
 
-  Serial.println();
-  Serial.print("gyroscope: ");
-  for (int i=0; i<3; i++) {
-    Serial.printf("%F3 [%s] ", cal.gyro_zerorate[i], cal.gyro_zerorate[i] == gyroZeroRotate[i]? "Y":"N");
-    if (i != 2) Serial.print(", ");
-    if (cal.gyro_zerorate[i] != gyroZeroRotate[i]) gyroCalibrationPassed = false;
-  }
-  Serial.println();
-  Serial.printf("magnetic: %F3 [%s] \n", cal.mag_field, cal.mag_field == magneticField? "Y":"N");
-  if (cal.mag_field != magneticField) magneticCalibrationPassed = false;
-  if (hardIronCalibrationPassed && softIronCalibrationPassed && gyroCalibrationPassed && magneticCalibrationPassed)
-    Serial.println("All calibration tests passed");
-  else
-  {
-   Serial.printf("hardIron Calibration: %s\n", hardIronCalibrationPassed? "Pass": "Fail"); 
-   Serial.printf("softIron Calibration: %s\n", softIronCalibrationPassed? "Pass": "Fail"); 
-   Serial.printf("Gryroscope Calibration: %s\n", gyroCalibrationPassed? "Pass": "Fail"); 
-   Serial.printf("Magnetic Field Calibrationn: %s\n", magneticCalibrationPassed? "Pass": "Fail"); 
-  }
+  static unsigned long lastReport = 0;
+  if (millis() - lastReport < 40) return; // Limit to 25Hz to keep Serial clean
+  lastReport = millis();
+
+  if (magnetometer == NULL || gyroscope == NULL || accelerometer == NULL) return;
+
+  // Get fresh sensor events
+  magnetometer->getEvent(&mag_event);
+  gyroscope->getEvent(&gyro_event);
+  accelerometer->getEvent(&accel_event);
+
+  // 1. Calculate Roll and Pitch from Accelerometer
+  // Roll = atan2(Y, Z), Pitch = atan2(-X, sqrt(Y^2 + Z^2))
+  float roll  = atan2(accel_event.acceleration.y, accel_event.acceleration.z) * 57.2958;
+  float pitch = atan2(-accel_event.acceleration.x, 
+                sqrt(accel_event.acceleration.y * accel_event.acceleration.y + 
+                     accel_event.acceleration.z * accel_event.acceleration.z)) * 57.2958;
+
+  // 2. Calculate Yaw (Heading) from Magnetometer
+  // Note: This is a "tilt-compensated" simplification
+  float mag_x = mag_event.magnetic.x;
+  float mag_y = mag_event.magnetic.y;
+  float yaw = atan2(mag_y, mag_x) * 57.2958;
+  
+  // Normalize yaw to 0-360
+  if (yaw < 0) yaw += 360;
+
+  // 3. Report to MotionCal (Required format)
+  /*Serial.print("Raw:");
+  Serial.print(int(accel_event.acceleration.x*8192/9.8)); Serial.print(",");
+  Serial.print(int(accel_event.acceleration.y*8192/9.8)); Serial.print(",");
+  Serial.print(int(accel_event.acceleration.z*8192/9.8)); Serial.print(",");
+  Serial.print(int(gyro_event.gyro.x*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
+  Serial.print(int(gyro_event.gyro.y*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
+  Serial.print(int(gyro_event.gyro.z*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
+  Serial.print(int(mag_event.magnetic.x*10)); Serial.print(",");
+  Serial.print(int(mag_event.magnetic.y*10)); Serial.print(",");
+  Serial.print(int(mag_event.magnetic.z*10)); Serial.println("");*/
+
+
+  Serial.print("Raw: ");
+  Serial.print(int(accel_event.acceleration.x*8192/9.8)); Serial.print(",");
+  Serial.print(int(accel_event.acceleration.y*8192/9.8)); Serial.print(",");
+  Serial.print(int(accel_event.acceleration.z*8192/9.8)); Serial.print(",");
+  Serial.print(int(gyro_event.gyro.x*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
+  Serial.print(int(gyro_event.gyro.y*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
+  Serial.print(int(gyro_event.gyro.z*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
+  Serial.print(int(mag_event.magnetic.x*10)); Serial.print(",");
+  Serial.print(int(mag_event.magnetic.y*10)); Serial.print(",");
+  Serial.print(int(mag_event.magnetic.z*10)); Serial.println("");
+
+
+
+
+
+  // 4. Report Roll, Pitch, Yaw for your own debugging
+  // We use "RPY:" so it doesn't confuse MotionCal's "Ori:" or "Raw:" parsers
+  //Serial.printf("Ori: %0.2f, %0.2f, %0.2f\n", roll, pitch, yaw);
+
+    Serial.print("Ori: "); 
+    Serial.print(roll); 
+    Serial.print(","); 
+    Serial.print(pitch); 
+    Serial.print(","); 
+    Serial.print(yaw); 
+    Serial.print("\n"); 
+
+  // unified data
+  Serial.print("Uni: ");
+  Serial.print(accel_event.acceleration.x); Serial.print(",");
+  Serial.print(accel_event.acceleration.y); Serial.print(",");
+  Serial.print(accel_event.acceleration.z); Serial.print(",");
+  Serial.print(gyro_event.gyro.x, 4); Serial.print(",");
+  Serial.print(gyro_event.gyro.y, 4); Serial.print(",");
+  Serial.print(gyro_event.gyro.z, 4); Serial.print(",");
+  Serial.print(mag_event.magnetic.x); Serial.print(",");
+  Serial.print(mag_event.magnetic.y); Serial.print(",");
+  Serial.print(mag_event.magnetic.z); Serial.println("");
+    
+  loopcount = loopcount + 1; 
 }
 
 
+void reportSensorReadings2()
+{
+  int ax, ay, az; 
+  int gx, gy, gz; 
+  int mx, my, mz; 
+
+  if (calcount != 0) return;
+  
+  unsigned long now = millis();
+
+  if ((now - lastFrameTime) > orientationUpdateMillis) 
+  { 
+    // get orientation from sensor
+
+    // test data
+    orientationX += orientationXDelta; 
+    orientationY += orientationYDelta; 
+    orientationZ += orientationZDelta; 
+
+    if (orientationX > 360.0) orientationX -= 360.0; 
+    if (orientationX < 0) orientationX += 360.0; 
+
+    if (orientationY > 360.0) orientationY -= 360.0; 
+    if (orientationY < 0) orientationY += 360.0; 
+
+    if (orientationZ > 360.0) orientationZ -= 360.0; 
+    if (orientationZ < 0) orientationZ += 360.0; 
 
 
-void loop() {
-  receiveCalibration();
+
+
+    lastFrameTime = now; 
+
+    Serial.print("Ori: "); 
+    Serial.print(orientationX); 
+    Serial.print(","); 
+    Serial.print(orientationY); 
+    Serial.print(","); 
+    Serial.print(orientationZ); 
+    Serial.print("\n"); 
+  } 
+
+  if (magnetometer == NULL || gyroscope == NULL || accelerometer == NULL)
+    return;
+
+  // get and print uncalibrated data 
+  magnetometer->getEvent(&mag_event);
+  gyroscope->getEvent(&gyro_event);
+  accelerometer->getEvent(&accel_event);
+  
+  // 'Raw' values to match expectation of MotionCal
+  Serial.print("Raw: ");
+  Serial.print(int(accel_event.acceleration.x*8192/9.8)); Serial.print(",");
+  Serial.print(int(accel_event.acceleration.y*8192/9.8)); Serial.print(",");
+  Serial.print(int(accel_event.acceleration.z*8192/9.8)); Serial.print(",");
+  Serial.print(int(gyro_event.gyro.x*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
+  Serial.print(int(gyro_event.gyro.y*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
+  Serial.print(int(gyro_event.gyro.z*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
+  Serial.print(int(mag_event.magnetic.x*10)); Serial.print(",");
+  Serial.print(int(mag_event.magnetic.y*10)); Serial.print(",");
+  Serial.print(int(mag_event.magnetic.z*10)); Serial.println("");
+
+  // unified data
+  Serial.print("Uni: ");
+  Serial.print(accel_event.acceleration.x); Serial.print(",");
+  Serial.print(accel_event.acceleration.y); Serial.print(",");
+  Serial.print(accel_event.acceleration.z); Serial.print(",");
+  Serial.print(gyro_event.gyro.x, 4); Serial.print(",");
+  Serial.print(gyro_event.gyro.y, 4); Serial.print(",");
+  Serial.print(gyro_event.gyro.z, 4); Serial.print(",");
+  Serial.print(mag_event.magnetic.x); Serial.print(",");
+  Serial.print(mag_event.magnetic.y); Serial.print(",");
+  Serial.print(mag_event.magnetic.z); Serial.println("");
+    
+  loopcount = loopcount + 1; 
+
+}
+
+void reportCalibration()
+{
+  if (calcount != 0) return;
+
+  // occasionally print calibration 
+  if (loopcount == 50 || loopcount > 100) 
+  { 
+    Serial.print("Cal1:");
+    for (int i=0; i<3; i++) {
+      Serial.print(cal.accel_zerog[i], 3); 
+      Serial.print(",");
+    }
+    for (int i=0; i<3; i++) {
+      Serial.print(cal.gyro_zerorate[i], 3);
+      Serial.print(",");
+    }  
+    for (int i=0; i<3; i++) {
+      Serial.print(cal.mag_hardiron[i], 3); 
+      Serial.print(",");
+    }  
+    Serial.println(cal.mag_field, 3);
+    loopcount++;
+  } 
+
+  if (loopcount >= 100) 
+  { 
+    Serial.print("Cal2:");
+    for (int i=0; i<9; i++) {
+      Serial.print(cal.mag_softiron[i], 4); 
+      if (i < 8) Serial.print(',');
+    }
+    Serial.println();
+    loopcount = 0;
+  } 
+
+  delay(10);
+}
+
+void flashLed()
+{
+    // blink LED, slow normally, fast when calibration written 
+  if (ledMillis >= 1000) { 
+    if (ledFastblinks > 0) { 
+      ledFastblinks = ledFastblinks - 1; 
+      ledMillis -= 125; 
+    } else { 
+      ledMillis -= 1000; 
+    } 
+
+    ledState = (ledState == LOW) ? HIGH : LOW;
+    digitalWrite(ledPin, ledState); 
+  } 
 }
 
 // Standard CRC16-CCITT for MotionCal verification
@@ -299,7 +526,69 @@ uint16_t _crc16_update(uint16_t crc, uint8_t a) {
   return crc;
 }
 
-void receiveCalibration() { 
+void receiveCalibration() {
+  while (Serial.available()) {
+    byte b = Serial.read();
+
+    // Look for 'u' (117)
+    if (calcount == 0) {
+      if (b == 117) caldata[calcount++] = b;
+      continue;
+    }
+
+    // Look for 'T' (84)
+    if (calcount == 1) {
+      if (b == 84) {
+        caldata[calcount++] = b;
+      } else {
+        calcount = 0; // Reset if not 'uT'
+      }
+      continue;
+    }
+
+    // Fill the rest of the 68 bytes
+    caldata[calcount++] = b;
+
+    if (calcount >= calibrationDataSize) {
+      uint16_t crc = 0xFFFF;
+      for (int i = 0; i < calibrationDataSize; i++) {
+        crc = _crc16_update(crc, caldata[i]);
+      }
+
+      if (crc == 0) {
+        Serial.println("CalR: SUCCESS! Valid packet.");
+        processAndSave(caldata);
+      } else {
+    Serial.printf("\n--- CALIBRATION CRC FAIL (0x%04X) ---\n", crc);
+        
+        // 1. Raw Hex Dump
+        Serial.print("HEX: ");
+        for(int i=0; i < 68; i++) {
+          Serial.printf("%02X ", caldata[i]);
+        }
+        Serial.println();
+
+        // 2. Interpret 64 bytes of payload as 16 Floats
+        // Data starts at index 2, ends at index 65
+        Serial.println("FLOAT DATA IN PACKET:");
+        for (int i = 0; i < 16; i++) {
+          float val;
+          int startIndex = 2 + (i * 4);
+          memcpy(&val, &caldata[startIndex], 4);
+          
+          Serial.printf("[%02d]: %f  ", i, val);
+          if ((i + 1) % 4 == 0) Serial.println(); // New line every 4 floats
+        }
+        
+        uint16_t receivedCrc = (caldata[66] << 8) | caldata[67];
+        Serial.printf("Tail CRC Bytes: 0x%04X\n", receivedCrc);
+        Serial.println("--------------------------------------\n");
+      }
+      calcount = 0; // Always reset
+    }
+  }
+}
+void receiveCalibration2() { 
   uint16_t crc;   
   byte b, i; 
 
@@ -312,10 +601,14 @@ void receiveCalibration() {
       calcount = 0; 
       return; 
     } 
-    
     caldata[calcount++] = b; 
 
-    if (calcount < calibrationDataSize) return; 
+    if (calcount < calibrationDataSize) 
+    {
+      //Serial.printf("%d bytes received, %d expected\n", calcount, calibrationDataSize);
+      return; 
+    }
+    Serial.printf("CalR:process message.   \n");
 
     // Verify CRC
     crc = 0xFFFF; 
@@ -324,20 +617,23 @@ void receiveCalibration() {
     } 
 
     if (crc == 0) { 
-      Serial.println("\nValid MotionCal packet received!");
+      Serial.println("CalR:Valid MotionCal packet received!");
       processAndSave(caldata);
       calcount = 0; 
       return; 
     } 
+    Serial.printf("CalR:Invalid MotionCal packeyt received: crc: 0x%o4X\n", crc);
 
     // If CRC fails, look for next header in buffer
     for (i=2; i < calibrationDataSize; i++) { 
       if (caldata[i] == 117 && caldata[i+1] == 84) { 
         calcount = calibrationDataSize - i; 
         memmove(caldata, caldata + i, calcount); 
+        Serial.printf("CalR:CRC failed, looking for next header in buffer, found at calCount: %d\'n", calcount);
         return; 
       } 
     } 
+    Serial.println("CalR:CRC failed, couldn't find header in buffer");
     calcount = 0; 
   } 
 }
@@ -371,5 +667,6 @@ void processAndSave(byte* data) {
     Serial.println("**WARNING** Couldn't save calibration");
   }
 }
+
 
 
