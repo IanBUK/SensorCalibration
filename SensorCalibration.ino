@@ -21,6 +21,10 @@ unsigned long lastFrameTime = millis();
 
 // Orientation variables
 unsigned long orientationUpdateMillis = 20;
+float relativeYawBase =0;
+float relativePitchBase =0;
+float relativeRollBase =0;
+bool needsRelativeBase = true;
 
 // LED Variables
 const int ledPin = 13; 
@@ -319,8 +323,7 @@ void reportSensorReadings() {
   float mag_y = mag_event.magnetic.y;
   float yaw = atan2(mag_y, mag_x) * 57.2958;
   
-  // Normalize yaw to 0-360
-  if (yaw < 0) yaw += 360;
+
 
   // 3. Report to MotionCal (Required format)
   Serial.print("Raw: ");
@@ -333,6 +336,24 @@ void reportSensorReadings() {
   Serial.print(int(mag_event.magnetic.x*10)); Serial.print(",");
   Serial.print(int(mag_event.magnetic.y*10)); Serial.print(",");
   Serial.print(int(mag_event.magnetic.z*10)); Serial.println("");
+
+  if(needsRelativeBase)
+  {
+    relativeYawBase = yaw;
+    relativePitchBase = pitch;
+    relativeRollBase = roll;
+    needsRelativeBase = false;
+  }
+  else
+  {
+    yaw -= relativeYawBase;
+    pitch -= relativePitchBase;
+    roll -= relativeRollBase;
+  }
+
+  // Normalize yaw to 0-360
+  if (yaw < 0) yaw += 360;
+
 
   // 4. Report Roll, Pitch, Yaw for your own debugging
   Serial.print("Ori: "); 
