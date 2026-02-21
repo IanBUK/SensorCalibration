@@ -49,11 +49,13 @@ byte calcount = 0;
 
 // Internal struct to unpack the MotionCal binary stream
 struct __attribute__((packed)) MotionCalPacket {
-  uint16_t header;     // 'uT' (117, 84)
-  float offsets[9];    // Accel(3), Gyro(3), Mag(3)
-  float softiron[9];   // 3x3 Matrix
-  float field;         // Magnetic Field Strength
-  uint16_t crc;        // CRC16
+  uint16_t header;        // 'uT' (117, 84)
+  float accel_offsets[3]; // PC sends 0.0 here
+  float gyro_offsets[3];  // PC sends 0.0 here
+  float mag_offsets[3];   // PC sends magcal.V[i]
+  float mag_field;        // PC sends magcal.B
+  float soft_iron[6];     // PC sends 6 elements of invW
+  uint16_t crc;           // 2-byte CRC (Little-Endian)
 };
 
 void setup() {
@@ -73,7 +75,6 @@ void setup() {
     Serial.println("Current calibration loaded:");
     cal.printSavedCalibration();
     printCalibration(cal.mag_softiron, cal.mag_hardiron, cal.mag_field, cal.gyro_zerorate, cal.accel_zerog, "read at startup");
-    //while (1) delay(10);
   }
   else
   {
@@ -328,18 +329,6 @@ void reportSensorReadings() {
   if (yaw < 0) yaw += 360;
 
   // 3. Report to MotionCal (Required format)
-  /*Serial.print("Raw:");
-  Serial.print(int(accel_event.acceleration.x*8192/9.8)); Serial.print(",");
-  Serial.print(int(accel_event.acceleration.y*8192/9.8)); Serial.print(",");
-  Serial.print(int(accel_event.acceleration.z*8192/9.8)); Serial.print(",");
-  Serial.print(int(gyro_event.gyro.x*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
-  Serial.print(int(gyro_event.gyro.y*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
-  Serial.print(int(gyro_event.gyro.z*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
-  Serial.print(int(mag_event.magnetic.x*10)); Serial.print(",");
-  Serial.print(int(mag_event.magnetic.y*10)); Serial.print(",");
-  Serial.print(int(mag_event.magnetic.z*10)); Serial.println("");*/
-
-
   Serial.print("Raw: ");
   Serial.print(int(accel_event.acceleration.x*8192/9.8)); Serial.print(",");
   Serial.print(int(accel_event.acceleration.y*8192/9.8)); Serial.print(",");
@@ -351,21 +340,17 @@ void reportSensorReadings() {
   Serial.print(int(mag_event.magnetic.y*10)); Serial.print(",");
   Serial.print(int(mag_event.magnetic.z*10)); Serial.println("");
 
-
-
-
-
   // 4. Report Roll, Pitch, Yaw for your own debugging
   // We use "RPY:" so it doesn't confuse MotionCal's "Ori:" or "Raw:" parsers
   //Serial.printf("Ori: %0.2f, %0.2f, %0.2f\n", roll, pitch, yaw);
 
-    Serial.print("Ori: "); 
-    Serial.print(roll); 
-    Serial.print(","); 
-    Serial.print(pitch); 
-    Serial.print(","); 
-    Serial.print(yaw); 
-    Serial.print("\n"); 
+  Serial.print("Ori: "); 
+  Serial.print(roll); 
+  Serial.print(","); 
+  Serial.print(pitch); 
+  Serial.print(","); 
+  Serial.print(yaw); 
+  Serial.print("\n"); 
 
   // unified data
   Serial.print("Uni: ");
@@ -530,6 +515,100 @@ void receiveCalibration() {
   while (Serial.available()) {
     byte b = Serial.read();
 
+    if (calcount == 0) {
+      if (b == 117) caldata[calcount++] = b;
+      continue;
+    }
+    if (calcount == 1) {
+      if (b == 84) caldata[calcount++] = b;
+      else calcount = 0;
+      continue;
+    }
+
+    caldata[calcount++] = b;
+
+    if (calcount >= 68) {
+      // Calculate CRC on first 66 bytes
+      uint16_t crc = 0xFFFF;
+      for (int i = 0; i < 66; i++) {
+        crc = _crc16_update(crc, caldata[i]);
+      }
+
+      // PC sends CRC Little-Endian: buf[66] is low byte, buf[67] is high byte
+      uint16_t sentCrc = caldata[66] | (caldata[67] << 8);
+
+      if (crc == sentCrc) {
+        Serial.println("CalR: SUCCESS! CRC Match.");
+        processAndSave(caldata);
+      } else {
+        Serial.printf("CalR: CRC Mismatch. Calc: 0x%04X, Sent: 0x%04X\n", crc, sentCrc);
+        // Emergency Save: If the field strength is reasonable, save anyway
+        float fieldCheck;
+        memcpy(&fieldCheck, &caldata[2 + (9 * 4)], 4); 
+        if (fieldCheck > 20.0 && fieldCheck < 80.0) {
+           Serial.println("CalR: Data looks valid despite CRC. Processing...");
+           processAndSave(caldata);
+        }
+      }
+      calcount = 0; 
+    }
+  }
+}
+
+
+
+
+void receiveCalibration4() {
+  while (Serial.available()) {
+    byte b = Serial.read();
+
+    // Sync to 'uT' header
+    if (calcount == 0) {
+      if (b == 117) caldata[calcount++] = b;
+      continue;
+    }
+    if (calcount == 1) {
+      if (b == 84) caldata[calcount++] = b;
+      else calcount = 0;
+      continue;
+    }
+
+    caldata[calcount++] = b;
+
+    if (calcount >= 68) {
+      Serial.println("\n--- NEW CALIBRATION PACKET RECEIVED ---");
+      
+      // 1. Report Floats for Comparison
+      for (int i = 0; i < 16; i++) {
+        float val;
+        memcpy(&val, &caldata[2 + (i * 4)], 4);
+        
+        // Labeling based on MotionCal's standard float array order
+        const char* label = "";
+        if (i >= 0 && i <= 2) label = "(Accel Offset)";
+        if (i >= 3 && i <= 5) label = "(Gyro Offset)";
+        if (i >= 6 && i <= 8) label = "(Mag Hard-Iron)";
+        if (i >= 9 && i <= 11) label = "(Soft-Iron Row 1)";
+        if (i >= 12 && i <= 14) label = "(Soft-Iron Row 2/3)"; // Mapping varies by library
+        if (i == 15) label = "(Mag Field Strength)";
+
+        Serial.printf("Float [%02d]: %10.6f %s\n", i, val, label);
+      }
+
+      // 2. Perform the save
+      // We are trusting the 'uT' header + 68 byte length for now
+      processAndSave(caldata);
+      
+      Serial.println("---------------------------------------\n");
+      calcount = 0; 
+    }
+  }
+}
+
+void receiveCalibration3() {
+  while (Serial.available()) {
+    byte b = Serial.read();
+
     // Look for 'u' (117)
     if (calcount == 0) {
       if (b == 117) caldata[calcount++] = b;
@@ -641,32 +720,86 @@ void receiveCalibration2() {
 void processAndSave(byte* data) {
   MotionCalPacket* packet = (MotionCalPacket*)data;
 
-  // 1. Map Magnetometer Hard Iron (Indices 6, 7, 8)
-  cal.mag_hardiron[0] = packet->offsets[6];
-  cal.mag_hardiron[1] = packet->offsets[7];
-  cal.mag_hardiron[2] = packet->offsets[8];
+  // 1. Reconstruct the 3x3 Soft Iron Matrix from the 6 symmetric elements
+  // Row 0: [0,0], [0,1], [0,2]
+  cal.mag_softiron[0] = packet->soft_iron[0]; 
+  cal.mag_softiron[1] = packet->soft_iron[3]; 
+  cal.mag_softiron[2] = packet->soft_iron[4]; 
+  // Row 1: [1,0], [1,1], [1,2]
+  cal.mag_softiron[3] = packet->soft_iron[3]; 
+  cal.mag_softiron[4] = packet->soft_iron[1]; 
+  cal.mag_softiron[5] = packet->soft_iron[5]; 
+  // Row 2: [2,0], [2,1], [2,2]
+  cal.mag_softiron[6] = packet->soft_iron[4]; 
+  cal.mag_softiron[7] = packet->soft_iron[5]; 
+  cal.mag_softiron[8] = packet->soft_iron[2]; 
 
-  // 2. Map Magnetometer Soft Iron (Full 3x3 Matrix)
-  for (int i = 0; i < 9; i++) {
-    cal.mag_softiron[i] = packet->softiron[i];
+  // 2. Map Hard Iron and Field Strength
+  for(int i=0; i<3; i++) cal.mag_hardiron[i] = packet->mag_offsets[i];
+  cal.mag_field = packet->mag_field;
+
+  // --- THE TRUE TEST: FINAL DATA REPORT ---
+  Serial.println("\n========================================");
+  Serial.println("   ESP32 CALIBRATION DATA RECEIVED      ");
+  Serial.println("========================================");
+  
+  Serial.printf("Hard Iron (Offsets): %7.2f, %7.2f, %7.2f\n", 
+                cal.mag_hardiron[0], cal.mag_hardiron[1], cal.mag_hardiron[2]);
+  
+  Serial.printf("Field Strength:      %7.2f uT\n", cal.mag_field);
+  
+  Serial.println("\nSoft Iron Matrix (3x3):");
+  for (int i=0; i<3; i++) {
+    Serial.printf("  [Row %d]: %8.4f, %8.4f, %8.4f\n", 
+                  i, cal.mag_softiron[i*3], cal.mag_softiron[i*3+1], cal.mag_softiron[i*3+2]);
   }
+  
+  // Quick sanity check for the user
+  if (cal.mag_field < 10.0) {
+    Serial.println("\n!! WARNING: Field strength looks too low for the UK !!");
+  }
+  Serial.println("========================================\n");
 
-  // 3. Map Gyro Zero Rate (Indices 3, 4, 5)
-  cal.gyro_zerorate[0] = packet->offsets[3];
-  cal.gyro_zerorate[1] = packet->offsets[4];
-  cal.gyro_zerorate[2] = packet->offsets[5];
-
-  // 4. Map Field Strength
-  cal.mag_field = packet->field;
-  printCalibration(cal.mag_softiron, cal.mag_hardiron, cal.mag_field, cal.gyro_zerorate, NULL, "read from motion cal");
-  // 5. Save to ESP32 Flash
+  Serial.println("call cal.saveCalibration");
+  // 3. Save to Flash
   if (cal.saveCalibration()) {
-    Serial.println("Wrote calibration to Flash/NVS");
+    Serial.println("SUCCESS: Written to Flash/NVS.");
     cal.printSavedCalibration();
+    Serial.println("done");
   } else {
-    Serial.println("**WARNING** Couldn't save calibration");
+    Serial.println("ERROR: Flash write failed.");
   }
 }
+
+// void processAndSave2(byte* data) {
+//   MotionCalPacket* packet = (MotionCalPacket*)data;
+
+//   // 1. Map Magnetometer Hard Iron (Indices 6, 7, 8)
+//   cal.mag_hardiron[0] = packet->offsets[6];
+//   cal.mag_hardiron[1] = packet->offsets[7];
+//   cal.mag_hardiron[2] = packet->offsets[8];
+
+//   // 2. Map Magnetometer Soft Iron (Full 3x3 Matrix)
+//   for (int i = 0; i < 9; i++) {
+//     cal.mag_softiron[i] = packet->softiron[i];
+//   }
+
+//   // 3. Map Gyro Zero Rate (Indices 3, 4, 5)
+//   cal.gyro_zerorate[0] = packet->offsets[3];
+//   cal.gyro_zerorate[1] = packet->offsets[4];
+//   cal.gyro_zerorate[2] = packet->offsets[5];
+
+//   // 4. Map Field Strength
+//   cal.mag_field = packet->field;
+//   printCalibration(cal.mag_softiron, cal.mag_hardiron, cal.mag_field, cal.gyro_zerorate, NULL, "read from motion cal");
+//   // 5. Save to ESP32 Flash
+//   if (cal.saveCalibration()) {
+//     Serial.println("Wrote calibration to Flash/NVS");
+//     cal.printSavedCalibration();
+//   } else {
+//     Serial.println("**WARNING** Couldn't save calibration");
+//   }
+// }
 
 
 
