@@ -21,12 +21,6 @@ unsigned long lastFrameTime = millis();
 
 // Orientation variables
 unsigned long orientationUpdateMillis = 20;
-float orientationXDelta = 1; 
-float orientationYDelta = 2; 
-float orientationZDelta = 3; 
-float orientationX; 
-float orientationY; 
-float orientationZ; 
 
 // LED Variables
 const int ledPin = 13; 
@@ -341,9 +335,6 @@ void reportSensorReadings() {
   Serial.print(int(mag_event.magnetic.z*10)); Serial.println("");
 
   // 4. Report Roll, Pitch, Yaw for your own debugging
-  // We use "RPY:" so it doesn't confuse MotionCal's "Ori:" or "Raw:" parsers
-  //Serial.printf("Ori: %0.2f, %0.2f, %0.2f\n", roll, pitch, yaw);
-
   Serial.print("Ori: "); 
   Serial.print(yaw); 
   Serial.print(","); 
@@ -365,85 +356,6 @@ void reportSensorReadings() {
   Serial.print(mag_event.magnetic.z); Serial.println("");
     
   loopcount = loopcount + 1; 
-}
-
-
-void reportSensorReadings2()
-{
-  int ax, ay, az; 
-  int gx, gy, gz; 
-  int mx, my, mz; 
-
-  if (calcount != 0) return;
-  
-  unsigned long now = millis();
-
-  if ((now - lastFrameTime) > orientationUpdateMillis) 
-  { 
-    // get orientation from sensor
-
-    // test data
-    orientationX += orientationXDelta; 
-    orientationY += orientationYDelta; 
-    orientationZ += orientationZDelta; 
-
-    if (orientationX > 360.0) orientationX -= 360.0; 
-    if (orientationX < 0) orientationX += 360.0; 
-
-    if (orientationY > 360.0) orientationY -= 360.0; 
-    if (orientationY < 0) orientationY += 360.0; 
-
-    if (orientationZ > 360.0) orientationZ -= 360.0; 
-    if (orientationZ < 0) orientationZ += 360.0; 
-
-
-
-
-    lastFrameTime = now; 
-
-    Serial.print("Ori: "); 
-    Serial.print(orientationX); 
-    Serial.print(","); 
-    Serial.print(orientationY); 
-    Serial.print(","); 
-    Serial.print(orientationZ); 
-    Serial.print("\n"); 
-  } 
-
-  if (magnetometer == NULL || gyroscope == NULL || accelerometer == NULL)
-    return;
-
-  // get and print uncalibrated data 
-  magnetometer->getEvent(&mag_event);
-  gyroscope->getEvent(&gyro_event);
-  accelerometer->getEvent(&accel_event);
-  
-  // 'Raw' values to match expectation of MotionCal
-  Serial.print("Raw: ");
-  Serial.print(int(accel_event.acceleration.x*8192/9.8)); Serial.print(",");
-  Serial.print(int(accel_event.acceleration.y*8192/9.8)); Serial.print(",");
-  Serial.print(int(accel_event.acceleration.z*8192/9.8)); Serial.print(",");
-  Serial.print(int(gyro_event.gyro.x*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
-  Serial.print(int(gyro_event.gyro.y*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
-  Serial.print(int(gyro_event.gyro.z*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
-  Serial.print(int(mag_event.magnetic.x*10)); Serial.print(",");
-  Serial.print(int(mag_event.magnetic.y*10)); Serial.print(",");
-  Serial.print(int(mag_event.magnetic.z*10)); Serial.println("");
-
-  // unified data
-  Serial.print("Uni: ");
-  Serial.print(accel_event.acceleration.x); Serial.print(",");
-  Serial.print(accel_event.acceleration.y); Serial.print(",");
-  Serial.print(accel_event.acceleration.z); Serial.print(",");
-  Serial.print(gyro_event.gyro.x, 4); Serial.print(",");
-  Serial.print(gyro_event.gyro.y, 4); Serial.print(",");
-  Serial.print(gyro_event.gyro.z, 4); Serial.print(",");
-  Serial.print(mag_event.magnetic.x); Serial.print(",");
-  Serial.print(mag_event.magnetic.y); Serial.print(",");
-  Serial.print(mag_event.magnetic.z); Serial.println("");
-    
-  loopcount = loopcount + 1; 
-
 }
 
 void reportCalibration()
@@ -555,168 +467,6 @@ void receiveCalibration() {
   }
 }
 
-
-
-
-void receiveCalibration4() {
-  while (Serial.available()) {
-    byte b = Serial.read();
-
-    // Sync to 'uT' header
-    if (calcount == 0) {
-      if (b == 117) caldata[calcount++] = b;
-      continue;
-    }
-    if (calcount == 1) {
-      if (b == 84) caldata[calcount++] = b;
-      else calcount = 0;
-      continue;
-    }
-
-    caldata[calcount++] = b;
-
-    if (calcount >= 68) {
-      Serial.println("\n--- NEW CALIBRATION PACKET RECEIVED ---");
-      
-      // 1. Report Floats for Comparison
-      for (int i = 0; i < 16; i++) {
-        float val;
-        memcpy(&val, &caldata[2 + (i * 4)], 4);
-        
-        // Labeling based on MotionCal's standard float array order
-        const char* label = "";
-        if (i >= 0 && i <= 2) label = "(Accel Offset)";
-        if (i >= 3 && i <= 5) label = "(Gyro Offset)";
-        if (i >= 6 && i <= 8) label = "(Mag Hard-Iron)";
-        if (i >= 9 && i <= 11) label = "(Soft-Iron Row 1)";
-        if (i >= 12 && i <= 14) label = "(Soft-Iron Row 2/3)"; // Mapping varies by library
-        if (i == 15) label = "(Mag Field Strength)";
-
-        Serial.printf("Float [%02d]: %10.6f %s\n", i, val, label);
-      }
-
-      // 2. Perform the save
-      // We are trusting the 'uT' header + 68 byte length for now
-      processAndSave(caldata);
-      
-      Serial.println("---------------------------------------\n");
-      calcount = 0; 
-    }
-  }
-}
-
-void receiveCalibration3() {
-  while (Serial.available()) {
-    byte b = Serial.read();
-
-    // Look for 'u' (117)
-    if (calcount == 0) {
-      if (b == 117) caldata[calcount++] = b;
-      continue;
-    }
-
-    // Look for 'T' (84)
-    if (calcount == 1) {
-      if (b == 84) {
-        caldata[calcount++] = b;
-      } else {
-        calcount = 0; // Reset if not 'uT'
-      }
-      continue;
-    }
-
-    // Fill the rest of the 68 bytes
-    caldata[calcount++] = b;
-
-    if (calcount >= calibrationDataSize) {
-      uint16_t crc = 0xFFFF;
-      for (int i = 0; i < calibrationDataSize; i++) {
-        crc = _crc16_update(crc, caldata[i]);
-      }
-
-      if (crc == 0) {
-        Serial.println("CalR: SUCCESS! Valid packet.");
-        processAndSave(caldata);
-      } else {
-    Serial.printf("\n--- CALIBRATION CRC FAIL (0x%04X) ---\n", crc);
-        
-        // 1. Raw Hex Dump
-        Serial.print("HEX: ");
-        for(int i=0; i < 68; i++) {
-          Serial.printf("%02X ", caldata[i]);
-        }
-        Serial.println();
-
-        // 2. Interpret 64 bytes of payload as 16 Floats
-        // Data starts at index 2, ends at index 65
-        Serial.println("FLOAT DATA IN PACKET:");
-        for (int i = 0; i < 16; i++) {
-          float val;
-          int startIndex = 2 + (i * 4);
-          memcpy(&val, &caldata[startIndex], 4);
-          
-          Serial.printf("[%02d]: %f  ", i, val);
-          if ((i + 1) % 4 == 0) Serial.println(); // New line every 4 floats
-        }
-        
-        uint16_t receivedCrc = (caldata[66] << 8) | caldata[67];
-        Serial.printf("Tail CRC Bytes: 0x%04X\n", receivedCrc);
-        Serial.println("--------------------------------------\n");
-      }
-      calcount = 0; // Always reset
-    }
-  }
-}
-void receiveCalibration2() { 
-  uint16_t crc;   
-  byte b, i; 
-
-  if (Serial.available()) { 
-    b = Serial.read(); 
-
-    // Look for 'uT' header
-    if (calcount == 0 && b != 117) return; 
-    if (calcount == 1 && b != 84) { 
-      calcount = 0; 
-      return; 
-    } 
-    caldata[calcount++] = b; 
-
-    if (calcount < calibrationDataSize) 
-    {
-      //Serial.printf("%d bytes received, %d expected\n", calcount, calibrationDataSize);
-      return; 
-    }
-    Serial.printf("CalR:process message.   \n");
-
-    // Verify CRC
-    crc = 0xFFFF; 
-    for (i=0; i < calibrationDataSize; i++) { 
-      crc = _crc16_update(crc, caldata[i]); 
-    } 
-
-    if (crc == 0) { 
-      Serial.println("CalR:Valid MotionCal packet received!");
-      processAndSave(caldata);
-      calcount = 0; 
-      return; 
-    } 
-    Serial.printf("CalR:Invalid MotionCal packeyt received: crc: 0x%o4X\n", crc);
-
-    // If CRC fails, look for next header in buffer
-    for (i=2; i < calibrationDataSize; i++) { 
-      if (caldata[i] == 117 && caldata[i+1] == 84) { 
-        calcount = calibrationDataSize - i; 
-        memmove(caldata, caldata + i, calcount); 
-        Serial.printf("CalR:CRC failed, looking for next header in buffer, found at calCount: %d\'n", calcount);
-        return; 
-      } 
-    } 
-    Serial.println("CalR:CRC failed, couldn't find header in buffer");
-    calcount = 0; 
-  } 
-}
-
 void processAndSave(byte* data) {
   MotionCalPacket* packet = (MotionCalPacket*)data;
 
@@ -770,36 +520,3 @@ void processAndSave(byte* data) {
     Serial.println("ERROR: Flash write failed.");
   }
 }
-
-// void processAndSave2(byte* data) {
-//   MotionCalPacket* packet = (MotionCalPacket*)data;
-
-//   // 1. Map Magnetometer Hard Iron (Indices 6, 7, 8)
-//   cal.mag_hardiron[0] = packet->offsets[6];
-//   cal.mag_hardiron[1] = packet->offsets[7];
-//   cal.mag_hardiron[2] = packet->offsets[8];
-
-//   // 2. Map Magnetometer Soft Iron (Full 3x3 Matrix)
-//   for (int i = 0; i < 9; i++) {
-//     cal.mag_softiron[i] = packet->softiron[i];
-//   }
-
-//   // 3. Map Gyro Zero Rate (Indices 3, 4, 5)
-//   cal.gyro_zerorate[0] = packet->offsets[3];
-//   cal.gyro_zerorate[1] = packet->offsets[4];
-//   cal.gyro_zerorate[2] = packet->offsets[5];
-
-//   // 4. Map Field Strength
-//   cal.mag_field = packet->field;
-//   printCalibration(cal.mag_softiron, cal.mag_hardiron, cal.mag_field, cal.gyro_zerorate, NULL, "read from motion cal");
-//   // 5. Save to ESP32 Flash
-//   if (cal.saveCalibration()) {
-//     Serial.println("Wrote calibration to Flash/NVS");
-//     cal.printSavedCalibration();
-//   } else {
-//     Serial.println("**WARNING** Couldn't save calibration");
-//   }
-// }
-
-
-
