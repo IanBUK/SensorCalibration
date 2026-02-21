@@ -345,11 +345,11 @@ void reportSensorReadings() {
   //Serial.printf("Ori: %0.2f, %0.2f, %0.2f\n", roll, pitch, yaw);
 
   Serial.print("Ori: "); 
-  Serial.print(roll); 
+  Serial.print(yaw); 
   Serial.print(","); 
   Serial.print(pitch); 
   Serial.print(","); 
-  Serial.print(yaw); 
+  Serial.print(roll); 
   Serial.print("\n"); 
 
   // unified data
