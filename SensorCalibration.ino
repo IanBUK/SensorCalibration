@@ -296,11 +296,10 @@ void loop() {
 }
 
 void reportSensorReadings() {
-  // SILENCE: Don't talk if we are in the middle of receiving a packet
   if (calcount != 0) return;
 
   static unsigned long lastReport = 0;
-  if (millis() - lastReport < 40) return; // Limit to 25Hz to keep Serial clean
+  if (millis() - lastReport < 40) return; 
   lastReport = millis();
 
   if (magnetometer == NULL || gyroscope == NULL || accelerometer == NULL) return;
@@ -310,73 +309,62 @@ void reportSensorReadings() {
   gyroscope->getEvent(&gyro_event);
   accelerometer->getEvent(&accel_event);
 
-  // 1. Calculate Roll and Pitch from Accelerometer
-  // Roll = atan2(Y, Z), Pitch = atan2(-X, sqrt(Y^2 + Z^2))
-  float roll  = atan2(accel_event.acceleration.y, accel_event.acceleration.z) * 57.2958;
-  float pitch = atan2(-accel_event.acceleration.x, 
-                sqrt(accel_event.acceleration.y * accel_event.acceleration.y + 
-                     accel_event.acceleration.z * accel_event.acceleration.z)) * 57.2958;
+  // --- UPSIDE DOWN CORRECTION (MPU9250 under FireBeetle) ---
+  // Flip Y and Z axes so the ESP32 top is the reference
+  float ax = accel_event.acceleration.x;
+  float ay = -accel_event.acceleration.y; // Inverted
+  float az = -accel_event.acceleration.z; // Inverted
 
-  // 2. Calculate Yaw (Heading) from Magnetometer
-  // Note: This is a "tilt-compensated" simplification
-  float mag_x = mag_event.magnetic.x;
-  float mag_y = mag_event.magnetic.y;
-  float yaw = atan2(mag_y, mag_x) * 57.2958;
-  
+  float gx = gyro_event.gyro.x;
+  float gy = -gyro_event.gyro.y;         // Inverted
+  float gz = -gyro_event.gyro.z;         // Inverted
 
+  float mx = mag_event.magnetic.x;
+  float my = -mag_event.magnetic.y;      // Inverted
+  float mz = -mag_event.magnetic.z;      // Inverted
 
-  // 3. Report to MotionCal (Required format)
+  // 1. Calculate Roll and Pitch from Corrected Accelerometer
+  float roll  = atan2(ay, az) * 57.2958;
+  float pitch = atan2(-ax, sqrt(ay * ay + az * az)) * 57.2958;
+
+  // 2. Calculate Yaw (Heading) from Corrected Magnetometer
+  float yaw = atan2(my, mx) * 57.2958;
+
+  // 3. Report to MotionCal (Required binary-mimic format)
+  // Scaling factors: Accel (8192/9.8), Gyro (16), Mag (10)
   Serial.print("Raw: ");
-  Serial.print(int(accel_event.acceleration.x*8192/9.8)); Serial.print(",");
-  Serial.print(int(accel_event.acceleration.y*8192/9.8)); Serial.print(",");
-  Serial.print(int(accel_event.acceleration.z*8192/9.8)); Serial.print(",");
-  Serial.print(int(gyro_event.gyro.x*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
-  Serial.print(int(gyro_event.gyro.y*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
-  Serial.print(int(gyro_event.gyro.z*SENSORS_RADS_TO_DPS*16)); Serial.print(",");
-  Serial.print(int(mag_event.magnetic.x*10)); Serial.print(",");
-  Serial.print(int(mag_event.magnetic.y*10)); Serial.print(",");
-  Serial.print(int(mag_event.magnetic.z*10)); Serial.println("");
+  Serial.print(int(ax * 8192 / 9.8)); Serial.print(",");
+  Serial.print(int(ay * 8192 / 9.8)); Serial.print(",");
+  Serial.print(int(az * 8192 / 9.8)); Serial.print(",");
+  Serial.print(int(gx * SENSORS_RADS_TO_DPS * 16)); Serial.print(",");
+  Serial.print(int(gy * SENSORS_RADS_TO_DPS * 16)); Serial.print(",");
+  Serial.print(int(gz * SENSORS_RADS_TO_DPS * 16)); Serial.print(",");
+  Serial.print(int(mx * 10)); Serial.print(",");
+  Serial.print(int(my * 10)); Serial.print(",");
+  Serial.print(int(mz * 10)); Serial.println();
 
-  if(needsRelativeBase)
-  {
+  // 4. Handle Relative Orientation
+  if(needsRelativeBase) {
     relativeYawBase = yaw;
     relativePitchBase = pitch;
     relativeRollBase = roll;
     needsRelativeBase = false;
-  }
-  else
-  {
+  } else {
     yaw -= relativeYawBase;
     pitch -= relativePitchBase;
     roll -= relativeRollBase;
   }
 
-  // Normalize yaw to 0-360
   if (yaw < 0) yaw += 360;
 
-
-  // 4. Report Roll, Pitch, Yaw for your own debugging
-  Serial.print("Ori: "); 
-  Serial.print(yaw); 
-  Serial.print(","); 
-  Serial.print(pitch); 
-  Serial.print(","); 
-  Serial.print(roll); 
-  Serial.print("\n"); 
-
-  // unified data
+  // 5. Report Roll, Pitch, Yaw (Ori) and Unified (Uni) for debugging
+  Serial.printf("Ori: %.2f,%.2f,%.2f\n", yaw, pitch, roll); 
+  
   Serial.print("Uni: ");
-  Serial.print(accel_event.acceleration.x); Serial.print(",");
-  Serial.print(accel_event.acceleration.y); Serial.print(",");
-  Serial.print(accel_event.acceleration.z); Serial.print(",");
-  Serial.print(gyro_event.gyro.x, 4); Serial.print(",");
-  Serial.print(gyro_event.gyro.y, 4); Serial.print(",");
-  Serial.print(gyro_event.gyro.z, 4); Serial.print(",");
-  Serial.print(mag_event.magnetic.x); Serial.print(",");
-  Serial.print(mag_event.magnetic.y); Serial.print(",");
-  Serial.print(mag_event.magnetic.z); Serial.println("");
+  Serial.printf("%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f\n",
+                ax, ay, az, gx, gy, gz, mx, my, mz);
     
-  loopcount = loopcount + 1; 
+  loopcount++; 
 }
 
 void reportCalibration()
