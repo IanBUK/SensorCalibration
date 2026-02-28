@@ -19,12 +19,17 @@ sensors_event_t mag_event, gyro_event, accel_event;
 int loopcount = 0;
 unsigned long lastFrameTime = millis(); 
 
+float refreshRateHz = 25.0f;
+float refreshRateMs = 1000.0f / refreshRateHz;
+
+
+
 // Orientation variables
 unsigned long orientationUpdateMillis = 20;
 float relativeYawBase =0;
 float relativePitchBase =0;
 float relativeRollBase =0;
-bool needsRelativeBase = true;
+bool needsRelativeBase = false;
 
 // LED Variables
 const int ledPin = 13; 
@@ -295,11 +300,669 @@ void loop() {
   flashLed();
 }
 
+
 void reportSensorReadings() {
   if (calcount != 0) return;
 
   static unsigned long lastReport = 0;
-  if (millis() - lastReport < 40) return; 
+  if (millis() - lastReport < 200) return; 
+  lastReport = millis();
+
+  magnetometer->getEvent(&mag_event);
+  accelerometer->getEvent(&accel_event);
+
+  // 1. PHYSICAL ACCELEROMETER MAPPING
+  // Based on your previous success with axis placement:
+  float ax =  accel_event.acceleration.y; 
+  float ay =  accel_event.acceleration.x; 
+  float az =  accel_event.acceleration.z; 
+
+  // 2. THE MAGNETOMETER SYNC (The Fix for the 222 -> 130 drop)
+  // We align the Magnetometer to the Accelerometer's world.
+  // We swap Mag X and Y to account for the 90-degree internal sensor rotation.
+  float mx =  mag_event.magnetic.x;  
+  float my =  mag_event.magnetic.y; 
+  float mz =  mag_event.magnetic.z; 
+
+  // 3. STABLE TRIGONOMETRY
+  float rollRad  = atan2(ay, az); 
+  float pitchRad = atan2(-ax, sqrt(ay * ay + az * az) + 0.001);
+
+  // 4. TILT COMPENSATION (Aerospace Standard)
+  float cosR = cos(rollRad);
+  float sinR = sin(rollRad);
+  float cosP = cos(pitchRad);
+  float sinP = sin(pitchRad);
+
+  // Re-projecting the magnetic field onto the calculated horizontal plane
+  float Xh = mx * cosP + my * sinR * sinP + mz * cosR * sinP;
+  float Yh = my * cosR - mz * sinR;
+  
+  // atan2(-Yh, Xh) is standard for a Right-Handed System
+  float yawRad = atan2(-Yh, Xh);
+
+  // 5. CONVERT TO DEGREES
+  float roll  = rollRad  * 57.2958;
+  float pitch = pitchRad * 57.2958;
+  float yaw   = yawRad   * 57.2958;
+
+  // 6. GIMBAL LOCK PROTECTION
+  if (pitch > 89.0)  pitch = 89.0;
+  if (pitch < -89.0) pitch = -89.0;
+
+  // 7. RELATIVE ZEROING (Desk Calibration)
+  if(needsRelativeBase) {
+    relativeYawBase = yaw;
+    relativePitchBase = pitch;
+    relativeRollBase = roll;
+    needsRelativeBase = false;
+  } else {
+    yaw   -= relativeYawBase;
+    pitch -= relativePitchBase;
+    roll  -= relativeRollBase;
+    
+    // Final Normalization
+    if (yaw < 0) yaw += 360;
+    if (yaw >= 360) yaw -= 360;
+    if (roll > 180) roll -= 360;
+    if (roll < -180) roll += 360;
+  }
+
+  // 8. FINAL OUTPUT
+  Serial.printf("Ori: %.1f,%.1f,%.1f\n", yaw, pitch, roll); 
+  loopcount++; 
+}
+
+
+
+void reportSensorReadings13() {
+  if (calcount != 0) return;
+
+  static unsigned long lastReport = 0;
+  if (millis() - lastReport < 200) return; 
+  lastReport = millis();
+
+  magnetometer->getEvent(&mag_event);
+  accelerometer->getEvent(&accel_event);
+
+  // 1. PHYSICAL MAPPING (Based on your "Right Side Lift" test)
+  // We swap AX and AY because your "Right Lift" triggered Pitch instead of Roll.
+  float ax =  accel_event.acceleration.y; 
+  float ay = -accel_event.acceleration.x; 
+  float az =  accel_event.acceleration.z; 
+
+  // 2. MAGNETOMETER ALIGNMENT
+  // We align the Mag to match the new Accel mapping to stop the Yaw swing.
+  float mx =  mag_event.magnetic.y;  
+  float my = -mag_event.magnetic.x; 
+  float mz =  mag_event.magnetic.z; 
+
+  // 3. TRIGONOMETRY
+  float rollRad  = atan2(ay, az); 
+  float pitchRad = atan2(-ax, sqrt(ay * ay + az * az) + 0.001);
+
+  // 4. TILT COMPENSATION
+  float cosR = cos(rollRad);
+  float sinR = sin(rollRad);
+  float cosP = cos(pitchRad);
+  float sinP = sin(pitchRad);
+
+  float Xh = mx * cosP + my * sinR * sinP + mz * cosR * sinP;
+  float Yh = my * cosR - mz * sinR;
+  
+  float yawRad = atan2(-Yh, Xh);
+
+  // 5. CONVERT TO DEGREES
+  float roll  = rollRad  * 57.2958;
+  float pitch = pitchRad * 57.2958;
+  float yaw   = yawRad   * 57.2958;
+
+  // 6. STABILIZATION
+  if (pitch > 89.0)  pitch = 89.0;
+  if (pitch < -89.0) pitch = -89.0;
+
+  // 7. RELATIVE ZEROING
+  if(needsRelativeBase) {
+    relativeYawBase = yaw;
+    relativePitchBase = pitch;
+    relativeRollBase = roll;
+    needsRelativeBase = false;
+  } else {
+    yaw   -= relativeYawBase;
+    pitch -= relativePitchBase;
+    roll  -= relativeRollBase;
+    
+    if (yaw < 0) yaw += 360;
+    if (yaw >= 360) yaw -= 360;
+    if (roll > 180) roll -= 360;
+    if (roll < -180) roll += 360;
+  }
+
+  // 8. FINAL OUTPUT
+  Serial.printf("Ori: %.1f,%.1f,%.1f\n", yaw, pitch, roll); 
+  loopcount++; 
+}
+
+
+
+void reportSensorReadings12() {
+  if (calcount != 0) return;
+
+  static unsigned long lastReport = 0;
+  if (millis() - lastReport < 200) return; 
+  lastReport = millis();
+
+  magnetometer->getEvent(&mag_event);
+  accelerometer->getEvent(&accel_event);
+
+  // 1. RAW SENSOR MAPPING (UPRIGHT)
+  float ax =  accel_event.acceleration.x; 
+  float ay =  accel_event.acceleration.y; 
+  float az =  accel_event.acceleration.z; 
+
+  // 2. THE ALIGNMENT FIX (Crucial for the "Yaw Leak")
+  // We swap the Magnetometer axes so they match the Accelerometer's world.
+  // This stops the Yaw from swinging when you Pitch/Roll.
+  float mx = -mag_event.magnetic.y;  
+  float my =  mag_event.magnetic.x; 
+  float mz =  mag_event.magnetic.z; 
+
+  // 3. TRIGONOMETRY
+  // USB-C is on the X-axis (Left). Tipping it down is a ROLL for the sensor.
+  float rollRad  = atan2(ay, az); 
+  float pitchRad = atan2(-ax, sqrt(ay * ay + az * az) + 0.001);
+
+  // 4. TILT COMPENSATION (The "Compass Leveler")
+  float cosR = cos(rollRad);
+  float sinR = sin(rollRad);
+  float cosP = cos(pitchRad);
+  float sinP = sin(pitchRad);
+
+  // Projection logic
+  float Xh = mx * cosP + my * sinR * sinP + mz * cosR * sinP;
+  float Yh = my * cosR - mz * sinR;
+  
+  float yawRad = atan2(-Yh, Xh);
+
+  // 5. CONVERT TO DEGREES
+  float roll  = rollRad  * 57.2958;
+  float pitch = pitchRad * 57.2958;
+  float yaw   = yawRad   * 57.2958;
+
+  // 6. STABILIZATION
+  if (pitch > 89.0)  pitch = 89.0;
+  if (pitch < -89.0) pitch = -89.0;
+
+  // 7. RELATIVE ZEROING
+  if(needsRelativeBase) {
+    relativeYawBase = yaw;
+    relativePitchBase = pitch;
+    relativeRollBase = roll;
+    needsRelativeBase = false;
+  } else {
+    yaw   -= relativeYawBase;
+    pitch -= relativePitchBase;
+    roll  -= relativeRollBase;
+    
+    // Normalize Yaw 0-360
+    if (yaw < 0) yaw += 360;
+    if (yaw >= 360) yaw -= 360;
+
+    // Normalize Roll/Pitch -180 to 180
+    if (roll > 180) roll -= 360;
+    if (roll < -180) roll += 360;
+  }
+
+  // 8. FINAL OUTPUT
+  Serial.printf("Ori: %.1f,%.1f,%.1f\n", yaw, pitch, roll); 
+    
+  loopcount++; 
+}
+
+
+void reportSensorReadings11() {
+  if (calcount != 0) return;
+
+  static unsigned long lastReport = 0;
+  if (millis() - lastReport < 200) return; 
+  lastReport = millis();
+
+  magnetometer->getEvent(&mag_event);
+  accelerometer->getEvent(&accel_event);
+
+  // 1. RAW SENSOR MAPPING (UPRIGHT)
+  // Sensor is face up, so Z is positive.
+  float ax =  accel_event.acceleration.x; 
+  float ay =  accel_event.acceleration.y; 
+  float az =  accel_event.acceleration.z; 
+
+  // Magnetometer mapping
+  float mx =  mag_event.magnetic.x;  
+  float my =  mag_event.magnetic.y; 
+  float mz =  mag_event.magnetic.z; 
+
+  // 2. THE TRIG (RE-ALIGNED)
+  // Since Y points "Away" (Front) and X points "Left":
+  // ROLL is rotation around the Y axis
+  float rollRad  = atan2(ax, az); 
+  // PITCH is rotation around the X axis
+  float pitchRad = atan2(-ay, sqrt(ax * ax + az * az) + 0.001);
+
+  // 3. TILT COMPENSATION
+  float cosR = cos(rollRad);
+  float sinR = sin(rollRad);
+  float cosP = cos(pitchRad);
+  float sinP = sin(pitchRad);
+
+  // Project Mag onto the horizontal plane
+  float Xh = mx * cosP + my * sinR * sinP + mz * cosR * sinP;
+  float Yh = my * cosR - mz * sinR;
+  
+  float yawRad = atan2(-Yh, Xh);
+
+  // 4. CONVERT TO DEGREES
+  float roll  = rollRad  * 57.2958;
+  float pitch = pitchRad * 57.2958;
+  float yaw   = yawRad   * 57.2958;
+
+  // 5. STABILIZATION & NORMALIZATION
+  if (pitch > 89.0)  pitch = 89.0;
+  if (pitch < -89.0) pitch = -89.0;
+  if (yaw < 0) yaw += 360;
+
+  // 6. ZEROING LOGIC (The "Relative" Offset)
+  if(needsRelativeBase) {
+    relativeYawBase = yaw;
+    relativePitchBase = pitch;
+    relativeRollBase = roll;
+    needsRelativeBase = false;
+  } else {
+    yaw   -= relativeYawBase;
+    pitch -= relativePitchBase;
+    roll  -= relativeRollBase;
+    
+    // Normalize Yaw to 0-360
+    if (yaw < 0) yaw += 360;
+    if (yaw >= 360) yaw -= 360;
+
+    // Normalize Roll/Pitch to -180/180
+    if (roll > 180) roll -= 360;
+    if (roll < -180) roll += 360;
+  }
+
+  // 7. FINAL OUTPUT
+  // Sending: Yaw, Pitch, Roll
+  Serial.printf("Ori: %.1f,%.1f,%.1f\n", yaw, pitch, roll); 
+    
+  loopcount++; 
+}
+
+void reportSensorReadings10() {
+  if (calcount != 0) return;
+
+  static unsigned long lastReport = 0;
+  if (millis() - lastReport < 200) return; 
+  lastReport = millis();
+
+  magnetometer->getEvent(&mag_event);
+  accelerometer->getEvent(&accel_event);
+
+  // 1. PHYSICAL SENSOR MAPPING (The 'Sandwich' Correction)
+  // Based on your 'USB to floor' test:
+float ax =  accel_event.acceleration.x; 
+  float ay =  accel_event.acceleration.y; 
+  float az =  accel_event.acceleration.z; 
+
+  // The Swap: Map Mag Y to X-axis and -Mag X to Y-axis
+  float mx =  mag_event.magnetic.y;  
+  float my = -mag_event.magnetic.x; 
+  float mz =  mag_event.magnetic.z;
+
+  // 2. CALCULATE TILT (Roll & Pitch)
+  // Use the 'Nose Down' logic you described
+  float rollRad  = atan2(ay, az);
+  float pitchRad = atan2(-ax, sqrt(ay * ay + az * az));
+
+  // 3. THE "YAW FIX" (Tilt Compensation)
+  // We project the magnetic field onto a flat plane based on the tilt
+  float cosRoll  = cos(rollRad);
+  float sinRoll  = sin(rollRad);
+  float cosPitch = cos(pitchRad);
+  float sinPitch = sin(pitchRad);
+
+  // This is the standard equation to 'level' the compass
+  float Xh = mx * cosPitch + mz * sinPitch;
+  float Yh = mx * sinRoll * sinPitch + my * cosRoll - mz * sinRoll * cosPitch;
+  
+  float yawRad = atan2(Yh, Xh); 
+
+  // 4. CONVERT TO DEGREES
+  float roll  = rollRad * 57.2958;
+  float pitch = pitchRad * 57.2958;
+  float yaw   = yawRad * 57.2958;
+
+  // 5. NORMALIZE YAW (0 to 360)
+  if (yaw < 0) yaw += 360;
+
+  // 6. OUTPUT
+  // Let's use a clear format to see if the 'drift' stopped
+  Serial.printf("P:%.1f R:%.1f Y:%.1f\n", pitch, roll, yaw);
+}
+
+
+
+void reportSensorReadings8() {
+  magnetometer->getEvent(&mag_event);
+  accelerometer->getEvent(&accel_event);
+
+  // RAW ACCELERATION
+  float ax = accel_event.acceleration.x;
+  float ay = accel_event.acceleration.y;
+  float az = accel_event.acceleration.z;
+
+  // RAW MAGNETIC
+  float mx = mag_event.magnetic.x;
+  float my = mag_event.magnetic.y;
+  float mz = mag_event.magnetic.z;
+
+  Serial.printf("ACC: x=%.2f y=%.2f z=%.2f | MAG: x=%.1f y=%.1f z=%.1f\n", ax, ay, az, mx, my, mz);
+  delay(200);
+}
+
+
+
+void reportSensorReadings7() {
+  if (calcount != 0) return;
+
+  static unsigned long lastReport = 0;
+  if (millis() - lastReport < 200) return; 
+  lastReport = millis();
+
+  magnetometer->getEvent(&mag_event);
+  accelerometer->getEvent(&accel_event);
+
+  // --- STEP 1: USE RAW NATIVE AXES ONLY ---
+  float ax = accel_event.acceleration.x;
+  float ay = accel_event.acceleration.y;
+  float az = accel_event.acceleration.z;
+
+  float mx = mag_event.magnetic.x;
+  float my = mag_event.magnetic.y;
+  float mz = mag_event.magnetic.z;
+
+  // --- STEP 2: BASIC TILT MATH ---
+  // Roll: Rotation around X. (When flat, ay=0, az=9.8. atan2(0, 9.8) = 0)
+  float rollRad = atan2(ay, az);
+  
+  // Pitch: Rotation around Y. (When nose up, ax becomes negative)
+  float pitchRad = atan2(-ax, sqrt(ay * ay + az * az));
+
+  // --- STEP 3: TILT COMPENSATION ---
+  // Projecting Magnetometer onto the horizontal plane
+  float cosRoll  = cos(rollRad);
+  float sinRoll  = sin(rollRad);
+  float cosPitch = cos(pitchRad);
+  float sinPitch = sin(pitchRad);
+
+  float Xh = mx * cosPitch + my * sinRoll * sinPitch + mz * cosRoll * sinPitch;
+  float Yh = my * cosRoll - mz * sinRoll;
+  
+  // Yaw: Rotation around Z. 
+  float yawRad = atan2(-Yh, Xh); 
+
+  // --- STEP 4: CONVERT TO DEGREES ---
+  float roll  = rollRad * 57.2958;
+  float pitch = pitchRad * 57.2958;
+  float yaw   = yawRad * 57.2958;
+
+  if (yaw < 0) yaw += 360;
+
+  // --- STEP 5: THE "SANITY CHECK" PRINT ---
+  // This will show us if the axes are actually working
+  Serial.printf("Roll: %.1f | Pitch: %.1f | Yaw: %.1f\n", roll, pitch, yaw);
+}
+
+void reportSensorReadings6() {
+  if (calcount != 0) return;
+
+  static unsigned long lastReport = 0;
+  if (millis() - lastReport < 200) return; 
+  lastReport = millis();
+
+  magnetometer->getEvent(&mag_event);
+  gyroscope->getEvent(&gyro_event);
+  accelerometer->getEvent(&accel_event);
+
+  // --- 1. COORDINATE REMAPPING (The 'Sandwich' Fix) ---
+  // X = Front (USB). Y = Right (So we invert your 'Left' Y). Z = Up (So we invert your 'Down' Z).
+  // Flipping TWO axes (Y and Z) preserves the Right-Hand Rule math.
+  
+  float ax =  accel_event.acceleration.x; 
+  float ay = -accel_event.acceleration.y; // Invert Y to turn 'Left' into 'Right'
+  float az = -accel_event.acceleration.z; // Invert Z to turn 'Down' into 'Up'
+
+  float mx =  mag_event.magnetic.x;
+  float my = -mag_event.magnetic.y;      
+  float mz = -mag_event.magnetic.z;      
+
+  // --- 2. TRIGONOMETRY ---
+  float rollRad  = atan2(ay, az);
+  float pitchRad = atan2(-ax, sqrt(ay * ay + az * az));
+
+  float cosRoll  = cos(rollRad);
+  float sinRoll  = sin(rollRad);
+  float cosPitch = cos(pitchRad);
+  float sinPitch = sin(pitchRad);
+
+  // --- 3. TILT COMPENSATION (Aerospace Standard) ---
+  // This projection math ONLY works if ax, ay, az and mx, my, mz 
+  // share the exact same Right-Handed coordinate system.
+  float Xh = mx * cosPitch + my * sinRoll * sinPitch + mz * cosRoll * sinPitch;
+  float Yh = my * cosRoll - mz * sinRoll;
+  
+  // We use -Yh because atan2(Y, X) usually expects the Y-axis to be 'Left' 
+  // in navigation, but 'Right' in math.
+  float yawRad = atan2(-Yh, Xh); 
+
+  // --- 4. CONVERT & NORMALIZE ---
+  float roll  = rollRad * 57.2958;
+  float pitch = pitchRad * 57.2958;
+  float yaw   = yawRad * 57.2958;
+
+  if (yaw < 0) yaw += 360;
+
+  // Relative calibration logic
+  if(needsRelativeBase) {
+    relativeYawBase = yaw;
+    relativePitchBase = pitch;
+    relativeRollBase = roll;
+    needsRelativeBase = false;
+  } else {
+    yaw   -= relativeYawBase;
+    pitch -= relativePitchBase;
+    roll  -= relativeRollBase;
+    
+    if (yaw < 0) yaw += 360;
+    if (yaw >= 360) yaw -= 360;
+  }
+
+  // --- 5. OUTPUT ---
+  Serial.printf("Ori: %.1f,%.1f,%.1f\n", yaw, pitch, roll); 
+  loopcount++; 
+}
+
+
+
+void reportSensorReadings5() {
+  if (calcount != 0) return;
+
+  static unsigned long lastReport = 0;
+  if (millis() - lastReport < 200) return; 
+  lastReport = millis();
+
+  magnetometer->getEvent(&mag_event);
+  gyroscope->getEvent(&gyro_event);
+  accelerometer->getEvent(&accel_event);
+
+  // --- AXIS REMAP ---
+  float ax =  accel_event.acceleration.x;
+  float ay =  accel_event.acceleration.y; 
+  float az = -accel_event.acceleration.z; 
+
+  float gx =  gyro_event.gyro.x;
+  float gy =  gyro_event.gyro.y;         
+  float gz = -gyro_event.gyro.z;         
+
+  float mx =  mag_event.magnetic.x;
+  float my =  mag_event.magnetic.y;      
+  float mz = -mag_event.magnetic.z;      
+
+  // --- MATH ---
+  float rollRad  = atan2(ay, az);
+  float pitchRad = atan2(-ax, sqrt(ay * ay + az * az));
+
+  float cosRoll  = cos(rollRad);
+  float sinRoll  = sin(rollRad);
+  float cosPitch = cos(pitchRad);
+  float sinPitch = sin(pitchRad);
+
+  // Tilt compensation
+  float Xh = mx * cosPitch + my * sinRoll * sinPitch + mz * cosRoll * sinPitch;
+  float Yh = my * cosRoll - mz * sinRoll;
+  
+  // Note: Using atan2(Yh, Xh) for standard orientation
+  float yawRad = atan2(Yh, Xh); 
+
+  // --- DEGREES ---
+  float roll  = rollRad * 57.2958;
+  float pitch = pitchRad * 57.2958;
+  float yaw   = yawRad * 57.2958;
+
+  if (yaw < 0) yaw += 360;
+
+  // --- RELATIVE OFFSET ---
+  if(needsRelativeBase) {
+    relativeYawBase = yaw;
+    relativePitchBase = pitch;
+    relativeRollBase = roll;
+    needsRelativeBase = false;
+  } else {
+    yaw   -= relativeYawBase;
+    pitch -= relativePitchBase;
+    roll  -= relativeRollBase;
+    
+    if (yaw < 0) yaw += 360;
+    if (yaw >= 360) yaw -= 360;
+  }
+
+  // Final Serial Output
+  Serial.printf("Ori: %.1f,%.1f,%.1f\n", yaw, pitch, roll); 
+  loopcount++; 
+}
+
+void reportSensorReadings3() {
+  if (calcount != 0) return;
+
+  static unsigned long lastReport = 0;
+  if (millis() - lastReport < 200) return; 
+  lastReport = millis();
+
+  if (magnetometer == NULL || gyroscope == NULL || accelerometer == NULL) return;
+
+  // Get fresh sensor events
+  magnetometer->getEvent(&mag_event);
+  gyroscope->getEvent(&gyro_event);
+  accelerometer->getEvent(&accel_event);
+
+  // --- 1. AXIS CORRECTION (The "Sandwich" Setup) ---
+  // MPU9250 is underneath the FireBeetle, so we invert Y and Z 
+  // to make the ESP32's top face the "Up" reference.
+  float ax = accel_event.acceleration.x;
+  float ay = -accel_event.acceleration.y; 
+  float az = -accel_event.acceleration.z; 
+
+  float gx = gyro_event.gyro.x;
+  float gy = -gyro_event.gyro.y;         
+  float gz = -gyro_event.gyro.z;         
+
+  float mx = mag_event.magnetic.x;
+  float my = -mag_event.magnetic.y;      
+  float mz = -mag_event.magnetic.z;      
+
+  // --- 2. CALCULATE ROLL AND PITCH (In Radians for math) ---
+  // Using the Aerospace sequence to prevent axis cross-talk.
+  float rollRad  = atan2(ay, az);
+  float pitchRad = atan2(-ax, sqrt(ay * ay + az * az));
+
+  // --- 3. TILT-COMPENSATED YAW ---
+  // This projects the magnetometer data back onto a flat horizontal plane
+  // so that rolling the device doesn't change the heading.
+  float cosRoll  = cos(rollRad);
+  float sinRoll  = sin(rollRad);
+  float cosPitch = cos(pitchRad);
+  float sinPitch = sin(pitchRad);
+
+  // Xh and Yh are the "Horizontal" magnetometer components
+  float Xh = mx * cosPitch + my * sinRoll * sinPitch + mz * cosRoll * sinPitch;
+  float Yh = my * cosRoll - mz * sinRoll;
+  float yawRad = atan2(-Yh, Xh); // Negative Yh to correct clockwise/anti-clockwise
+
+  // --- 4. CONVERT TO DEGREES ---
+  float roll  = rollRad * 57.2958;
+  float pitch = pitchRad * 57.2958;
+  float yaw   = yawRad * 57.2958;
+
+  // Keep Yaw in 0-360 range
+  if (yaw < 0) yaw += 360;
+
+  // --- 5. REPORT TO MOTIONCAL (Binary-mimic format) ---
+  // Note: MotionCal typically expects the Raw sensor data before your local math.
+  // We keep the space after "Raw: " as per your requirement.
+  /*Serial.print("Raw: ");
+  Serial.print(int(ax * 8192 / 9.8)); Serial.print(",");
+  Serial.print(int(ay * 8192 / 9.8)); Serial.print(",");
+  Serial.print(int(az * 8192 / 9.8)); Serial.print(",");
+  Serial.print(int(gx * SENSORS_RADS_TO_DPS * 16)); Serial.print(",");
+  Serial.print(int(gy * SENSORS_RADS_TO_DPS * 16)); Serial.print(",");
+  Serial.print(int(gz * SENSORS_RADS_TO_DPS * 16)); Serial.print(",");
+  Serial.print(int(mx * 10)); Serial.print(",");
+  Serial.print(int(my * 10)); Serial.print(",");
+  Serial.print(int(mz * 10)); Serial.println();*/
+
+  // --- 6. HANDLE RELATIVE ORIENTATION ---
+  if(needsRelativeBase) {
+    relativeYawBase = yaw;
+    relativePitchBase = pitch;
+    relativeRollBase = roll;
+    needsRelativeBase = false;
+  } else {
+    yaw   -= relativeYawBase;
+    pitch -= relativePitchBase;
+    roll  -= relativeRollBase;
+    
+    // Normalize yaw back to 0-360 after subtraction
+    if (yaw < 0) yaw += 360;
+    if (yaw >= 360) yaw -= 360;
+  }
+
+  // --- 7. FINAL OUTPUT FOR OPENGL ---
+  // Sending Yaw, Pitch, Roll in the order the script expects
+  Serial.printf("Ori: %.1f,%.1f,%.1f\n", yaw, pitch, roll); 
+  
+  // Debug Unified string
+  /*Serial.print("Uni: ");
+  Serial.printf("%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f\n",
+                ax, ay, az, gx, gy, gz, mx, my, mz);*/
+    
+  loopcount++; 
+}
+
+
+void reportSensorReadings2() {
+  if (calcount != 0) return;
+
+  static unsigned long lastReport = 0;
+  if (millis() - lastReport < 100) return; 
   lastReport = millis();
 
   if (magnetometer == NULL || gyroscope == NULL || accelerometer == NULL) return;
@@ -323,16 +986,28 @@ void reportSensorReadings() {
   float my = -mag_event.magnetic.y;      // Inverted
   float mz = -mag_event.magnetic.z;      // Inverted
 
-  // 1. Calculate Roll and Pitch from Corrected Accelerometer
-  float roll  = atan2(ay, az) * 57.2958;
+  // // 1. Calculate Roll and Pitch from Corrected Accelerometer
+  // float roll  = atan2(ax, az) * 57.2958; 
+  // float pitch = atan2(-ay, sqrt(ax * ax + az * az)) * 57.2958;
+
+  // // 2. Calculate Yaw (Heading) from Corrected Magnetometer
+  // float yaw = atan2(-my, mx) * 57.2958;
+
+  // 1. Roll: Tilting side-to-side (should be ~90 when on edge)
+  // We use 'ay' and 'az' here because 'ay' is the "swing" axis for roll
+  float roll = atan2(ay, az) * 57.2958;
+
+  // 2. Pitch: Tilting front-to-back
+  // We use '-ax' against the magnitude of the other two to isolate it
   float pitch = atan2(-ax, sqrt(ay * ay + az * az)) * 57.2958;
 
-  // 2. Calculate Yaw (Heading) from Corrected Magnetometer
+  // 3. Yaw: Spinning on the desk
   float yaw = atan2(my, mx) * 57.2958;
+
 
   // 3. Report to MotionCal (Required binary-mimic format)
   // Scaling factors: Accel (8192/9.8), Gyro (16), Mag (10)
-  Serial.print("Raw: ");
+  /*Serial.print("Raw: ");
   Serial.print(int(ax * 8192 / 9.8)); Serial.print(",");
   Serial.print(int(ay * 8192 / 9.8)); Serial.print(",");
   Serial.print(int(az * 8192 / 9.8)); Serial.print(",");
@@ -341,7 +1016,7 @@ void reportSensorReadings() {
   Serial.print(int(gz * SENSORS_RADS_TO_DPS * 16)); Serial.print(",");
   Serial.print(int(mx * 10)); Serial.print(",");
   Serial.print(int(my * 10)); Serial.print(",");
-  Serial.print(int(mz * 10)); Serial.println();
+  Serial.print(int(mz * 10)); Serial.println();*/
 
   // 4. Handle Relative Orientation
   if(needsRelativeBase) {
@@ -360,9 +1035,9 @@ void reportSensorReadings() {
   // 5. Report Roll, Pitch, Yaw (Ori) and Unified (Uni) for debugging
   Serial.printf("Ori: %.2f,%.2f,%.2f\n", yaw, pitch, roll); 
   
-  Serial.print("Uni: ");
+  /*Serial.print("Uni: ");
   Serial.printf("%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f\n",
-                ax, ay, az, gx, gy, gz, mx, my, mz);
+                ax, ay, az, gx, gy, gz, mx, my, mz);*/
     
   loopcount++; 
 }
